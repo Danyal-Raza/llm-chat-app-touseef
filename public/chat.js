@@ -1,35 +1,50 @@
 /**
- * LLM Chat App Frontend - ChatGPT Multi-Session Architecture
+ * Consolidated Workspace Engine - Multi-Session LLM Chat + Visual Merge Sorter
  */
 
-// DOM elements
+// --- TAB ROUTING DOM COUPLINGS ---
+const tabChat = document.getElementById("tab-chat");
+const tabSorter = document.getElementById("tab-sorter");
+const panelChat = document.getElementById("panel-chat");
+const panelSorter = document.getElementById("panel-sorter");
+
+// --- CHAT DOM CORE ELEMENTS ---
 const chatMessages = document.getElementById("chat-messages");
 const userInput = document.getElementById("user-input");
 const sendButton = document.getElementById("send-button");
 const typingIndicator = document.getElementById("typing-indicator");
-
-// Utility Navigation Controls
 const historyButton = document.getElementById("history-button");
 const newChatButton = document.getElementById("new-chat-button");
 const historyModal = document.getElementById("history-modal");
 const closeHistory = document.getElementById("close-history");
 const historyLogBody = document.getElementById("history-log-body");
 
-// Storage Schema Keys
+// --- SORTING DOM CORE ELEMENTS ---
+const arrayInput = document.getElementById('array-input');
+const loadBtn = document.getElementById('load-btn');
+const prevBtn = document.getElementById('prev-btn');
+const nextBtn = document.getElementById('next-btn');
+const resetSorterBtn = document.getElementById('reset-sorter-btn');
+const barStage = document.getElementById('bar-stage');
+const statusText = document.getElementById('status-text');
+
+// Storage Keys
 const SESSIONS_STORAGE_KEY = "cf_ai_chat_sessions_v1";
 const CURRENT_ID_STORAGE_KEY = "cf_ai_chat_current_id_v1";
-
-// Default system baseline greeting
 const DEFAULT_WELCOME = "Hello! I'm an LLM chat app powered by Cloudflare Workers AI. How can I help you today?";
 
-// Configure Markdown Parser to safely format hyperlinks & open them in separate windows
+// --- SYSTEM WORKSPACE STATE MACHINES ---
+let chatSessions = JSON.parse(localStorage.getItem(SESSIONS_STORAGE_KEY)) || [];
+let currentSessionId = localStorage.getItem(CURRENT_ID_STORAGE_KEY) || null;
+let isProcessing = false;
+
+// Sorter Run Traces
+let executionHistory = [];
+let currentStepIndex = -1;
+
+// Configure Markdown Parser link formatting
 if (window.marked) {
-	marked.setOptions({
-		breaks: true,
-		gfm: true
-	});
-	
-	// Custom renderer override to force external tabs for hyperlinks
+	marked.setOptions({ breaks: true, gfm: true });
 	const renderer = new marked.Renderer();
 	renderer.link = function({ href, title, text }) {
 		const titleAttr = title ? ` title="${title}"` : '';
@@ -38,70 +53,65 @@ if (window.marked) {
 	marked.use({ renderer });
 }
 
-// Application Memory State Structure
-let chatSessions = JSON.parse(localStorage.getItem(SESSIONS_STORAGE_KEY)) || [];
-let currentSessionId = localStorage.getItem(CURRENT_ID_STORAGE_KEY) || null;
-let isProcessing = false;
+// --- MODULE 1: INTER-TAB VIEW MANAGEMENT ---
+tabChat.addEventListener("click", () => switchTab("chat"));
+tabSorter.addEventListener("click", () => switchTab("sorter"));
 
-/**
- * Returns the currently active chat session object
- */
+function switchTab(target) {
+	if (target === "chat") {
+		tabChat.classList.add("active");
+		tabSorter.classList.remove("active");
+		panelChat.classList.add("active");
+		panelSorter.classList.remove("active");
+	} else {
+		tabSorter.classList.add("active");
+		tabChat.classList.remove("active");
+		panelSorter.classList.add("active");
+		panelChat.classList.remove("active");
+		// Auto layout array matrix if it hasn't run yet
+		if(executionHistory.length === 0) initializeArrayVisualizer();
+	}
+}
+
+// --- MODULE 2: LLM CHAT CONTROLLER LOGIC ---
 function getCurrentSession() {
 	return chatSessions.find(s => s.id === currentSessionId);
 }
 
-/**
- * Generates an entirely fresh active conversation session tracking frame
- */
 function createNewSession() {
 	const newId = "session_" + Date.now();
 	const newSession = {
 		id: newId,
 		title: "New Chat Session",
 		timestamp: new Date().toLocaleDateString(),
-		history: [
-			{ role: "assistant", content: DEFAULT_WELCOME }
-		]
+		history: [{ role: "assistant", content: DEFAULT_WELCOME }]
 	};
-	chatSessions.unshift(newSession); // Push to the top of the history list
+	chatSessions.unshift(newSession);
 	currentSessionId = newId;
 	saveState();
 	renderCurrentChat();
 }
 
-/**
- * Saves current app states into permanent local storage vectors
- */
 function saveState() {
 	localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(chatSessions));
 	localStorage.setItem(CURRENT_ID_STORAGE_KEY, currentSessionId);
 }
 
-/**
- * Renders the active conversation message history into the main window view
- */
 function renderCurrentChat() {
-	// Wipe out old message element layouts cleanly
 	const existingMsgs = chatMessages.querySelectorAll(".message");
 	existingMsgs.forEach(el => el.remove());
-
 	const session = getCurrentSession();
 	if (!session) return;
-
 	session.history.forEach(msg => {
-		if (msg.role !== "system") {
-			addMessageToChatUi(msg.role, msg.content);
-		}
+		if (msg.role !== "system") addMessageToChatUi(msg.role, msg.content);
 	});
 }
 
-// Auto-resize textarea as user types
 userInput.addEventListener("input", function () {
 	this.style.height = "auto";
 	this.style.height = this.scrollHeight + "px";
 });
 
-// Send message on Enter (without Shift)
 userInput.addEventListener("keydown", function (e) {
 	if (e.key === "Enter" && !e.shiftKey) {
 		e.preventDefault();
@@ -109,13 +119,9 @@ userInput.addEventListener("keydown", function (e) {
 	}
 });
 
-// Action Event Wireups
 sendButton.addEventListener("click", sendMessage);
-
-// "New Chat" mimics GPT: Saves what you have, switches context cleanly
 newChatButton.addEventListener("click", () => {
 	const current = getCurrentSession();
-	// Only create a new session if the current one has actual user interactions
 	if (current && current.history.length <= 1) {
 		alert("You are already in a clean new chat window.");
 		return;
@@ -123,32 +129,24 @@ newChatButton.addEventListener("click", () => {
 	createNewSession();
 });
 
-// Build the Session Sidebar List View
 historyButton.addEventListener("click", () => {
 	historyLogBody.innerHTML = "";
-
 	if (chatSessions.length === 0) {
 		historyLogBody.innerHTML = `<p style="color: var(--text-light); text-align:center; padding:1rem;">No past chat rooms recorded.</p>`;
 	} else {
 		chatSessions.forEach(session => {
 			const item = document.createElement("div");
 			item.className = "history-session-item";
-			// Grab the first user message as the title preview if it exists
-			const titleText = session.title;
-			
 			item.innerHTML = `
-				<div class="session-title">${escapeHtml(titleText)}</div>
+				<div class="session-title">${escapeHtml(session.title)}</div>
 				<div class="session-date">${session.timestamp}</div>
 			`;
-			
-			// Switch chat instance on click
 			item.addEventListener("click", () => {
 				currentSessionId = session.id;
 				saveState();
 				renderCurrentChat();
 				historyModal.classList.remove("active");
 			});
-
 			historyLogBody.appendChild(item);
 		});
 	}
@@ -156,11 +154,7 @@ historyButton.addEventListener("click", () => {
 });
 
 closeHistory.addEventListener("click", () => historyModal.classList.remove("active"));
-window.addEventListener("click", (e) => { if (e.target === historyModal) historyModal.classList.remove("active"); });
 
-/**
- * Handles communication with backend and manages history states
- */
 async function sendMessage() {
 	const message = userInput.value.trim();
 	if (message === "" || isProcessing) return;
@@ -175,11 +169,9 @@ async function sendMessage() {
 	userInput.disabled = true;
 	sendButton.disabled = true;
 
-	// Append layouts
 	addMessageToChatUi("user", message);
 	session.history.push({ role: "user", content: message });
 
-	// Auto update title based on first user message topic
 	if (session.title === "New Chat Session" || session.history.length <= 3) {
 		session.title = message.length > 30 ? message.substring(0, 30) + "..." : message;
 	}
@@ -201,8 +193,6 @@ async function sendMessage() {
 		});
 
 		if (!response.ok) throw new Error("Failed response state.");
-		if (!response.body) throw new Error("Null response payload stream.");
-
 		typingIndicator.classList.remove("visible");
 
 		const assistantMessageEl = document.createElement("div");
@@ -223,7 +213,6 @@ async function sendMessage() {
 					const content = jsonData.response || jsonData.choices?.[0]?.delta?.content || "";
 					if (content) {
 						responseText += content;
-						// Convert streaming Markdown into rich HTML with Hyperlinks
 						if (window.marked) {
 							assistantTextEl.innerHTML = marked.parse(responseText);
 						} else {
@@ -231,9 +220,7 @@ async function sendMessage() {
 						}
 						scrollToBottom();
 					}
-				} catch (e) {
-					console.error("SSE parse error", e);
-				}
+				} catch (e) { console.error("SSE parse error", e); }
 			}
 			return false;
 		};
@@ -257,10 +244,10 @@ async function sendMessage() {
 		}
 
 	} catch (error) {
-		console.error("Chat Execution Error:", error);
+		console.error(error);
 		typingIndicator.classList.remove("visible");
 		addMessageToChatUi("assistant", "Sorry, there was an error processing your request.");
-	} finally {
+	} {
 		isProcessing = false;
 		userInput.disabled = false;
 		sendButton.disabled = false;
@@ -272,24 +259,18 @@ function addMessageToChatUi(role, content) {
 	const messageEl = document.createElement("div");
 	messageEl.className = `message ${role}-message`;
 	messageEl.innerHTML = '<div class="msg-content"></div>';
+	const target = messageEl.querySelector(".msg-content");
 	
-	const contentContainer = messageEl.querySelector(".msg-content");
-	
-	// Ensure hyperlinks render cleanly using Marked for assistant responses or structural entries
 	if (window.marked && role === "assistant") {
-		contentContainer.innerHTML = marked.parse(content);
+		target.innerHTML = marked.parse(content);
 	} else {
-		// Users don't usually send markdown, escape natively to prevent XSS injection injection points
-		contentContainer.textContent = content;
+		target.textContent = content;
 	}
-	
 	chatMessages.insertBefore(messageEl, typingIndicator);
 	scrollToBottom();
 }
 
-function scrollToBottom() {
-	chatMessages.scrollTop = chatMessages.scrollHeight;
-}
+function scrollToBottom() { chatMessages.scrollTop = chatMessages.scrollHeight; }
 
 function consumeSseEvents(buffer) {
 	let normalized = buffer.replace(/\r/g, "");
@@ -309,12 +290,143 @@ function consumeSseEvents(buffer) {
 	return { events, buffer: normalized };
 }
 
-// Standard helper routine to drop character bindings from template names safely
+// --- MODULE 3: VISUAL MERGE SORT ENGINE ---
+function initializeArrayVisualizer() {
+	const rawValues = arrayInput.value.split(',');
+	const filteredNumbers = rawValues
+		.map(val => parseInt(val.trim()))
+		.filter(val => !isNaN(val))
+		.slice(0, 14); // Keep visual array clean on one layout line
+
+	if(filteredNumbers.length === 0) {
+		alert("Please enter a valid list of numbers!");
+		return;
+	}
+
+	generateMergeSortTimeline(filteredNumbers);
+	currentStepIndex = 0;
+	renderSorterStep(currentStepIndex);
+	updateSorterButtons();
+}
+
+function generateMergeSortTimeline(originArray) {
+	executionHistory = [];
+	
+	function saveSnapshot(arr, msg, highlights = {}, completeSorted = false) {
+		executionHistory.push({
+			arrayState: [...arr],
+			message: msg,
+			highlights: highlights,
+			completeSorted: completeSorted
+		});
+	}
+
+	let traceArr = [...originArray];
+	saveSnapshot(traceArr, "Initial state loaded. Ready to begin.");
+
+	function mergeSortHelper(arr, startIdx) {
+		if (arr.length <= 1) return arr;
+		const mid = Math.floor(arr.length / 2);
+		
+		let splitHighlights = {};
+		for(let i = 0; i < arr.length; i++) { splitHighlights[startIdx + i] = 'split'; }
+		saveSnapshot(traceArr, `Splitting sub-array fragment at boundary indices [${startIdx} to ${startIdx + arr.length - 1}]`, splitHighlights);
+
+		const leftSub = mergeSortHelper(arr.slice(0, mid), startIdx);
+		const rightSub = mergeSortHelper(arr.slice(mid), startIdx + mid);
+
+		return merge(leftSub, rightSub, startIdx);
+	}
+
+	function merge(left, right, startIdx) {
+		let result = [];
+		let i = 0, j = 0;
+
+		while (i < left.length && j < right.length) {
+			let compHighlights = {};
+			compHighlights[startIdx + i] = 'compare';
+			compHighlights[startIdx + left.length + j] = 'compare';
+			saveSnapshot(traceArr, `Comparing subset pointer tracking values: ${left[i]} and ${right[j]}`, compHighlights);
+
+			if (left[i] <= right[j]) {
+				result.push(left[i]); i++;
+			} else {
+				result.push(right[j]); j++;
+			}
+		}
+
+		while (i < left.length) { result.push(left[i]); i++; }
+		while (j < right.length) { result.push(right[j]); j++; }
+
+		for (let k = 0; k < result.length; k++) { traceArr[startIdx + k] = result[k]; }
+
+		let mergeHighlights = {};
+		for(let k = 0; k < result.length; k++) { mergeHighlights[startIdx + k] = 'sorted'; }
+		saveSnapshot(traceArr, `Merged ordered segment run variant back: [${result.join(', ')}]`, mergeHighlights);
+
+		return result;
+	}
+
+	mergeSortHelper(originArray, 0);
+	saveSnapshot(traceArr, "Merge Sort Finished! Vector elements are sorted completely.", {}, true);
+}
+
+function renderSorterStep(index) {
+	if (index < 0 || index >= executionHistory.length) return;
+	const step = executionHistory[index];
+	barStage.innerHTML = '';
+	const maxVal = Math.max(...step.arrayState, 1);
+
+	step.arrayState.forEach((value, idx) => {
+		const bar = document.createElement('div');
+		bar.className = 'bar';
+		bar.innerText = value;
+		
+		const pct = Math.max((value / maxVal) * 100, 15);
+		bar.style.height = `${pct}%`;
+
+		if (step.completeSorted) {
+			bar.style.backgroundColor = 'var(--col-sorted)';
+		} else if (step.highlights[idx]) {
+			const type = step.highlights[idx];
+			if (type === 'split') bar.style.backgroundColor = 'var(--col-split)';
+			if (type === 'compare') bar.style.backgroundColor = 'var(--col-compare)';
+			if (type === 'sorted') bar.style.backgroundColor = 'var(--col-sorted)';
+		}
+		barStage.appendChild(bar);
+	});
+	statusText.innerText = `Step ${index + 1} of ${executionHistory.length}: ${step.message}`;
+}
+
+function updateSorterButtons() {
+	prevBtn.disabled = currentStepIndex <= 0;
+	nextBtn.disabled = currentStepIndex >= executionHistory.length - 1 || executionHistory.length === 0;
+}
+
+loadBtn.addEventListener('click', initializeArrayVisualizer);
+nextBtn.addEventListener('click', () => {
+	if (currentStepIndex < executionHistory.length - 1) {
+		currentStepIndex++; renderSorterStep(currentStepIndex); updateSorterButtons();
+	}
+});
+prevBtn.addEventListener('click', () => {
+	if (currentStepIndex > 0) {
+		currentStepIndex--; renderSorterStep(currentStepIndex); updateSorterButtons();
+	}
+});
+resetSorterBtn.addEventListener('click', () => {
+	barStage.innerHTML = '';
+	statusText.innerText = "Load an array dataset above to observe structural steps.";
+	currentStepIndex = -1;
+	executionHistory = [];
+	updateSorterButtons();
+});
+
+// --- MODULE 4: UNIFIED RUNTIME INITIALIZATION ---
 function escapeHtml(str) {
 	return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
 
-// App Initialization Cycle Setup
 if (!currentSessionId || !getCurrentSession()) {
 	if (chatSessions.length > 0) {
 		currentSessionId = chatSessions[0].id;
